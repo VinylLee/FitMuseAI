@@ -11,14 +11,7 @@ def build_provider_registry(config: AppConfig, public_asset_store) -> dict[str, 
     registry: dict[str, GenerationProvider] = {
         "dummy": DummyProvider(public_asset_store),
         "aliyun_aitryon": AliyunAitryonProvider(config, public_asset_store),
-        "aliyun_aitryon_plus": PlaceholderProvider(
-            name="aliyun_aitryon_plus",
-            required_env={"DASHSCOPE_API_KEY": config.dashscope_api_key},
-            supports_tryon=True,
-            supports_video=False,
-            requires_public_url=True,
-            public_asset_store=public_asset_store,
-        ),
+        "aliyun_aitryon_plus": AliyunAitryonProvider(config, public_asset_store, name="aliyun_aitryon_plus"),
         "tencent_changeclothes": PlaceholderProvider(
             name="tencent_changeclothes",
             required_env={

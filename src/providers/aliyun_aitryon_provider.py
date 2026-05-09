@@ -42,8 +42,9 @@ class AliyunAitryonProvider(GenerationProvider):
     supports_video = False
     requires_public_url = True
 
-    def __init__(self, config: AppConfig, public_asset_store=None) -> None:
+    def __init__(self, config: AppConfig, public_asset_store=None, name: str | None = None) -> None:
         super().__init__(public_asset_store)
+        self.name = name or "aliyun_aitryon"
         self._api_key = config.dashscope_api_key
         self._region = config.aliyun_region
         self._preview_model = config.aliyun_tryon_preview_model or "aitryon"
@@ -74,16 +75,6 @@ class AliyunAitryonProvider(GenerationProvider):
             )
 
         model = self._select_model(request)
-        if model != "aitryon":
-            return ProviderTaskResult(
-                task_id=None,
-                provider=self.name,
-                model=model,
-                status="failed",
-                remote_urls=[],
-                output_paths=[],
-                error_message=f"Model not implemented: {model}",
-            )
 
         try:
             person_url = self._ensure_public_url(request.person_image_path, request.person_public_url)
@@ -155,7 +146,8 @@ class AliyunAitryonProvider(GenerationProvider):
                     raw_response=create_result.raw_response,
                 )
 
-            poll_result = self._poll_task(task_id)
+            timeout = 300 if model == "aitryon-plus" else 120
+            poll_result = self._poll_task(task_id, timeout_seconds=timeout)
             raw_response = poll_result.raw_response
             if poll_result.status != "success" or not poll_result.image_url:
                 return ProviderTaskResult(
@@ -199,7 +191,7 @@ class AliyunAitryonProvider(GenerationProvider):
     def _select_model(self, request: TryOnRequest) -> str:
         if request.model_override:
             return request.model_override.strip()
-        if request.quality_mode == "high":
+        if request.quality_mode == "high" or self.name == "aliyun_aitryon_plus":
             return self._high_model
         return self._preview_model
 

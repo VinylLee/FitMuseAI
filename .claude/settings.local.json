@@ -4,7 +4,12 @@
       "Bash(python src/tools/validate_env.py --check-oss --check-network)",
       "Bash(python -c \"from src.public_asset_store import AliyunOssPublicAssetStore, _oss_build_signed_get_url; print\\('Import OK'\\)\")",
       "Bash(python -c \"from src.ui.gradio_app import build_app; print\\('Import OK'\\)\")",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "WebFetch(domain:help.aliyun.com)",
+      "WebSearch",
+      "WebFetch(domain:docs.comfy.org)",
+      "Bash(python -c \"from src.providers.aliyun_aitryon_provider import AliyunAitryonProvider; print\\('Import OK'\\)\")",
+      "Bash(python -c ' *)"
     ]
   }
 }
