@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from src.config import AppConfig
 from src.providers.base import GenerationProvider
+from src.providers.aliyun_aitryon_provider import AliyunAitryonProvider
 from src.providers.dummy_provider import DummyProvider
 from src.providers.placeholder_provider import PlaceholderProvider
 
@@ -9,14 +10,7 @@ from src.providers.placeholder_provider import PlaceholderProvider
 def build_provider_registry(config: AppConfig, public_asset_store) -> dict[str, GenerationProvider]:
     registry: dict[str, GenerationProvider] = {
         "dummy": DummyProvider(public_asset_store),
-        "aliyun_aitryon": PlaceholderProvider(
-            name="aliyun_aitryon",
-            required_env={"DASHSCOPE_API_KEY": config.dashscope_api_key},
-            supports_tryon=True,
-            supports_video=False,
-            requires_public_url=True,
-            public_asset_store=public_asset_store,
-        ),
+        "aliyun_aitryon": AliyunAitryonProvider(config, public_asset_store),
         "aliyun_aitryon_plus": PlaceholderProvider(
             name="aliyun_aitryon_plus",
             required_env={"DASHSCOPE_API_KEY": config.dashscope_api_key},

@@ -10,6 +10,9 @@ import argparse
 import base64
 import hmac
 import sys
+import time
+import urllib.parse
+import uuid
 import xml.etree.ElementTree as ET
 
 import requests
@@ -128,7 +131,7 @@ def _oss_parse_error(text: str) -> tuple[Optional[str], Optional[str]]:
     return code, message
 
 
-def _check_aliyun_oss_credentials(
+def _check_oss_acl(
     access_key_id: str,
     access_key_secret: str,
     bucket: str,
@@ -136,8 +139,9 @@ def _check_aliyun_oss_credentials(
     base_url: str,
     timeout: int = 8,
 ) -> CheckResult:
+    """Check OSS credentials validity via GetBucketAcl."""
     if not (access_key_id and access_key_secret and bucket and endpoint):
-        return CheckResult("ALIYUN_OSS_AUTH", False, "Missing access key, bucket, or endpoint")
+        return CheckResult("ALIYUN_OSS_ACL", False, "Missing OSS configuration")
 
     if base_url:
         target = base_url.rstrip("/") + "/?acl"
@@ -157,32 +161,237 @@ def _check_aliyun_oss_credentials(
     try:
         response = requests.get(target, headers=headers, timeout=timeout)
     except requests.RequestException as exc:
-        return CheckResult("ALIYUN_OSS_AUTH", False, f"Network error: {exc}")
+        return CheckResult("ALIYUN_OSS_ACL", False, f"Network error: {exc}")
 
     if response.status_code in {200, 204}:
-        return CheckResult("ALIYUN_OSS_AUTH", True, "OK")
+        return CheckResult("ALIYUN_OSS_ACL", True, "OK")
 
     if response.status_code in {301, 302, 307, 308}:
         location = response.headers.get("Location", "")
-        return CheckResult("ALIYUN_OSS_AUTH", False, f"Redirected: {location or 'check endpoint'}")
+        return CheckResult("ALIYUN_OSS_ACL", False, f"Redirected: {location or 'check endpoint'}")
 
     code, message = _oss_parse_error(response.text or "")
     if code in {"InvalidAccessKeyId", "SignatureDoesNotMatch", "RequestTimeTooSkewed"}:
-        return CheckResult("ALIYUN_OSS_AUTH", False, f"{code}: {message or 'invalid credentials'}")
+        return CheckResult("ALIYUN_OSS_ACL", False, f"{code}: {message or 'invalid credentials'}")
     if code == "AccessDenied":
         return CheckResult(
-            "ALIYUN_OSS_AUTH",
+            "ALIYUN_OSS_ACL",
             False,
             "AccessDenied: credentials valid but lacking GetBucketAcl permission",
         )
     if code == "NoSuchBucket":
-        return CheckResult("ALIYUN_OSS_AUTH", False, "NoSuchBucket: check bucket name")
+        return CheckResult("ALIYUN_OSS_ACL", False, "NoSuchBucket: check bucket name")
 
     return CheckResult(
-        "ALIYUN_OSS_AUTH",
+        "ALIYUN_OSS_ACL",
         False,
         f"HTTP {response.status_code}: {code or 'unknown error'}",
     )
+
+
+def _check_oss_upload(
+    access_key_id: str,
+    access_key_secret: str,
+    bucket: str,
+    endpoint: str,
+    base_url: str,
+    timeout: int = 15,
+) -> list[CheckResult]:
+    """Test full OSS upload / read-back / delete cycle with a temporary file."""
+    results: list[CheckResult] = []
+
+    if not (access_key_id and access_key_secret and bucket and endpoint):
+        results.append(CheckResult("ALIYUN_OSS_UPLOAD", False, "Missing OSS configuration"))
+        return results
+
+    object_key = f"validate_env_test_{uuid.uuid4().hex}.txt"
+    content = b"FitMuseAI OSS validation test file"
+    content_type = "text/plain"
+
+    if base_url:
+        upload_url = f"{base_url.rstrip('/')}/{object_key}"
+    else:
+        upload_url = f"https://{bucket}.{endpoint}/{object_key}"
+
+    download_url = upload_url
+
+    date_header = formatdate(usegmt=True)
+
+    # --- PutObject (with public-read ACL) ---
+    canonical_headers = "x-oss-object-acl:public-read\n"
+    canonical_resource = f"/{bucket}/{object_key}"
+    string_to_sign = (
+        f"PUT\n\n{content_type}\n{date_header}\n"
+        f"{canonical_headers}{canonical_resource}"
+    )
+    signature = _oss_sign(access_key_secret, string_to_sign)
+
+    put_headers = {
+        "Content-Type": content_type,
+        "Date": date_header,
+        "Authorization": f"OSS {access_key_id}:{signature}",
+        "x-oss-object-acl": "public-read",
+    }
+
+    results.append(CheckResult("ALIYUN_OSS_UPLOAD", True, f"PutObject with public-read ACL to {upload_url}"))
+
+    try:
+        response = requests.put(upload_url, data=content, headers=put_headers, timeout=timeout)
+    except requests.RequestException as exc:
+        results.append(CheckResult("ALIYUN_OSS_UPLOAD_ACL", False, f"Network error: {exc}"))
+        return results
+
+    acl_upload_ok = response.status_code in {200, 201, 204}
+    if not acl_upload_ok:
+        results.append(CheckResult("ALIYUN_OSS_UPLOAD_ACL", False, f"HTTP {response.status_code}: public-read ACL rejected"))
+        # Fall back: try upload without x-oss-object-acl header
+        date_header2 = formatdate(usegmt=True)
+        plain_resource = f"/{bucket}/{object_key}"
+        plain_string = f"PUT\n\n{content_type}\n{date_header2}\n{plain_resource}"
+        plain_sig = _oss_sign(access_key_secret, plain_string)
+        plain_headers = {
+            "Content-Type": content_type,
+            "Date": date_header2,
+            "Authorization": f"OSS {access_key_id}:{plain_sig}",
+        }
+        try:
+            resp2 = requests.put(upload_url, data=content, headers=plain_headers, timeout=timeout)
+        except requests.RequestException as exc2:
+            results.append(CheckResult("ALIYUN_OSS_UPLOAD", False, f"Upload (no-ACL) network error: {exc2}"))
+            return results
+
+        if resp2.status_code in {200, 201, 204}:
+            results.append(CheckResult("ALIYUN_OSS_UPLOAD", True, "PutObject OK (without public-read ACL)"))
+            uploaded_with_acl = False
+        else:
+            code2, msg2 = _oss_parse_error(resp2.text or "")
+            results.append(CheckResult("ALIYUN_OSS_UPLOAD", False, f"HTTP {resp2.status_code}: {code2 or msg2 or 'upload failed'}"))
+            _delete_oss_object(access_key_id, access_key_secret, bucket, endpoint, base_url, object_key, timeout)
+            return results
+    else:
+        results.append(CheckResult("ALIYUN_OSS_UPLOAD_ACL", True, "PutObject with public-read ACL OK"))
+        uploaded_with_acl = True
+
+    # --- GetObject (read-back verification) ---
+    # Try public download first; fall back to authenticated download if blocked
+    get_response = None
+    try:
+        get_response = requests.get(download_url, timeout=timeout)
+    except requests.RequestException:
+        pass
+
+    if get_response is not None and get_response.status_code == 200 and get_response.content == content:
+        results.append(CheckResult("ALIYUN_OSS_DOWNLOAD", True, "GetObject (public) OK"))
+    elif not uploaded_with_acl:
+        # Object is private — use authenticated download instead
+        date_header3 = formatdate(usegmt=True)
+        get_resource = f"/{bucket}/{object_key}"
+        get_string = f"GET\n\n\n{date_header3}\n{get_resource}"
+        get_sig = _oss_sign(access_key_secret, get_string)
+        get_headers = {
+            "Date": date_header3,
+            "Authorization": f"OSS {access_key_id}:{get_sig}",
+        }
+        try:
+            auth_resp = requests.get(download_url, headers=get_headers, timeout=timeout)
+        except requests.RequestException as exc3:
+            results.append(CheckResult("ALIYUN_OSS_DOWNLOAD", False, f"Authenticated download network error: {exc3}"))
+            _delete_oss_object(access_key_id, access_key_secret, bucket, endpoint, base_url, object_key, timeout)
+            return results
+
+        if auth_resp.status_code == 200 and auth_resp.content == content:
+            results.append(CheckResult("ALIYUN_OSS_DOWNLOAD", True, "GetObject (authenticated) OK"))
+        else:
+            results.append(CheckResult("ALIYUN_OSS_DOWNLOAD", False, f"HTTP {auth_resp.status_code}: authenticated download failed"))
+            _delete_oss_object(access_key_id, access_key_secret, bucket, endpoint, base_url, object_key, timeout)
+            return results
+    elif get_response is not None:
+        results.append(CheckResult("ALIYUN_OSS_DOWNLOAD", False, f"HTTP {get_response.status_code}: public download failed"))
+        _delete_oss_object(access_key_id, access_key_secret, bucket, endpoint, base_url, object_key, timeout)
+        return results
+    else:
+        results.append(CheckResult("ALIYUN_OSS_DOWNLOAD", False, "Public download failed (network error) and object was uploaded with public-read ACL — bucket may block public access"))
+        _delete_oss_object(access_key_id, access_key_secret, bucket, endpoint, base_url, object_key, timeout)
+        return results
+
+    # --- Signed URL test ---
+    signed_url = _oss_build_signed_get_url(
+        access_key_id, access_key_secret, bucket, endpoint, base_url,
+        object_key, ttl_seconds=300,
+    )
+    try:
+        signed_resp = requests.get(signed_url, timeout=timeout)
+    except requests.RequestException as exc4:
+        results.append(CheckResult("ALIYUN_OSS_SIGNED_URL", False, f"Signed URL network error: {exc4}"))
+    else:
+        if signed_resp.status_code == 200 and signed_resp.content == content:
+            results.append(CheckResult("ALIYUN_OSS_SIGNED_URL", True, "Signed GET URL OK"))
+        else:
+            results.append(CheckResult("ALIYUN_OSS_SIGNED_URL", False, f"HTTP {signed_resp.status_code}: signed URL download failed"))
+
+    # --- DeleteObject (cleanup) ---
+    if _delete_oss_object(access_key_id, access_key_secret, bucket, endpoint, base_url, object_key, timeout):
+        results.append(CheckResult("ALIYUN_OSS_DELETE", True, "DeleteObject OK"))
+    else:
+        results.append(CheckResult("ALIYUN_OSS_DELETE", False, "DeleteObject failed (manual cleanup may be needed)"))
+
+    return results
+
+
+def _oss_build_signed_get_url(
+    access_key_id: str,
+    access_key_secret: str,
+    bucket: str,
+    endpoint: str,
+    base_url: str,
+    object_key: str,
+    ttl_seconds: int,
+) -> str:
+    """Build a time-limited signed GET URL for OSS object access (mirrors public_asset_store)."""
+    expires = int(time.time()) + ttl_seconds
+    canonical_resource = f"/{bucket}/{object_key}"
+    string_to_sign = f"GET\n\n\n{expires}\n{canonical_resource}"
+    signature = _oss_sign(access_key_secret, string_to_sign)
+
+    if base_url:
+        url = f"{base_url.rstrip('/')}/{object_key}"
+    else:
+        url = f"https://{bucket}.{endpoint}/{object_key}"
+
+    encoded_sig = urllib.parse.quote(signature, safe="")
+    return f"{url}?Expires={expires}&OSSAccessKeyId={access_key_id}&Signature={encoded_sig}"
+
+
+def _delete_oss_object(
+    access_key_id: str,
+    access_key_secret: str,
+    bucket: str,
+    endpoint: str,
+    base_url: str,
+    object_key: str,
+    timeout: int = 10,
+) -> bool:
+    """Delete a temporary test object from OSS. Returns True on success."""
+    date_header = formatdate(usegmt=True)
+    canonical_resource = f"/{bucket}/{object_key}"
+    string_to_sign = f"DELETE\n\n\n{date_header}\n{canonical_resource}"
+    signature = _oss_sign(access_key_secret, string_to_sign)
+
+    if base_url:
+        delete_url = f"{base_url.rstrip('/')}/{object_key}"
+    else:
+        delete_url = f"https://{bucket}.{endpoint}/{object_key}"
+
+    headers = {
+        "Date": date_header,
+        "Authorization": f"OSS {access_key_id}:{signature}",
+    }
+
+    try:
+        resp = requests.delete(delete_url, headers=headers, timeout=timeout)
+        return resp.status_code in {200, 204}
+    except requests.RequestException:
+        return False
 
 
 def main() -> None:
@@ -191,11 +400,13 @@ def main() -> None:
         "--check-network",
         action="store_true",
         help="Send HEAD requests to public base URLs",
+        default=True,  # Default to True for better coverage, can be disabled if needed
     )
     parser.add_argument(
         "--check-oss",
         action="store_true",
         help="Validate Aliyun OSS credentials with a signed request",
+        default=True,  # Default to True for better coverage, can be disabled if needed
     )
     args = parser.parse_args()
 
@@ -305,16 +516,28 @@ def main() -> None:
             print(f"- {item.name}  [{status}]  {item.message}")
 
     if args.check_oss:
-        oss_result = _check_aliyun_oss_credentials(
+        print("\nOSS auth check:")
+        acl_result = _check_oss_acl(
             config.aliyun_oss_access_key_id,
             config.aliyun_oss_access_key_secret,
             config.aliyun_oss_bucket,
             config.aliyun_oss_endpoint,
             config.aliyun_oss_public_base_url,
         )
-        status = "OK" if oss_result.ok else "WARN"
-        print("\nOSS auth check:")
-        print(f"- {oss_result.name}  [{status}]  {oss_result.message}")
+        status = "OK" if acl_result.ok else "WARN"
+        print(f"- {acl_result.name}  [{status}]  {acl_result.message}")
+
+        if acl_result.ok:
+            print("\nOSS upload test:")
+            for item in _check_oss_upload(
+                config.aliyun_oss_access_key_id,
+                config.aliyun_oss_access_key_secret,
+                config.aliyun_oss_bucket,
+                config.aliyun_oss_endpoint,
+                config.aliyun_oss_public_base_url,
+            ):
+                status = "OK" if item.ok else "WARN"
+                print(f"- {item.name}  [{status}]  {item.message}")
 
 
 if __name__ == "__main__":

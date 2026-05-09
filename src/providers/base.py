@@ -20,6 +20,7 @@ class TryOnRequest:
     person_public_url: Optional[str] = None
     garment_public_url: Optional[str] = None
     quality_mode: str = "preview"
+    model_override: Optional[str] = None
 
 
 @dataclass
