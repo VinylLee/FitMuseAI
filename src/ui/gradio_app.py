@@ -23,6 +23,7 @@ def build_app(
 ) -> gr.Blocks:
     person_choices = _build_person_choices(store.list_persons())
     garment_choices = _build_garment_choices(store.list_garments())
+    garment2_choices = _build_garment2_choices(store.list_garments())
 
     tryon_provider_choices = [
         name for name, provider in providers.items() if provider.supports_tryon
@@ -79,7 +80,8 @@ def build_app(
 
         with gr.Tab("Single Try-On"):
             single_person = gr.Dropdown(label="Person", choices=person_choices)
-            single_garment = gr.Dropdown(label="Garment", choices=garment_choices)
+            single_garment = gr.Dropdown(label="Garment 1 (top/upper)", choices=garment_choices)
+            single_garment2 = gr.Dropdown(label="Garment 2 / bottom (optional)", choices=garment2_choices, value="")
             single_provider = gr.Dropdown(
                 label="Provider",
                 choices=tryon_provider_choices,
@@ -273,6 +275,7 @@ def build_app(
             garment_status,
             garment_gallery,
             single_garment,
+            single_garment2,
             batch_garments,
             canonical_garment,
             history_garment,
@@ -296,9 +299,10 @@ def build_app(
         )
 
         single_generate_btn.click(
-            fn=lambda person_id, garment_id, provider_name, quality, aspect, num_outputs, scene, negative: _handle_generate_single(
+            fn=lambda person_id, garment_id, garment2_id, provider_name, quality, aspect, num_outputs, scene, negative: _handle_generate_single(
                 person_id,
                 garment_id,
+                garment2_id,
                 provider_name,
                 quality,
                 aspect,
@@ -312,6 +316,7 @@ def build_app(
             inputs=[
                 single_person,
                 single_garment,
+                single_garment2,
                 single_provider,
                 single_quality,
                 single_aspect,
@@ -475,6 +480,7 @@ def build_app(
                 admin_garment_status,
                 garment_gallery,
                 single_garment,
+                single_garment2,
                 batch_garments,
                 canonical_garment,
                 history_garment,
@@ -496,6 +502,7 @@ def build_app(
                 admin_garment_status,
                 garment_gallery,
                 single_garment,
+                single_garment2,
                 batch_garments,
                 canonical_garment,
                 history_garment,
@@ -517,6 +524,7 @@ def build_app(
                 admin_garment_image,
                 garment_gallery,
                 single_garment,
+                single_garment2,
                 batch_garments,
                 canonical_garment,
                 history_garment,
@@ -530,6 +538,7 @@ def build_app(
                 admin_garment_status,
                 garment_gallery,
                 single_garment,
+                single_garment2,
                 batch_garments,
                 canonical_garment,
                 history_garment,
@@ -593,6 +602,10 @@ def _build_garment_choices(garments: list[dict[str, Any]]) -> list[tuple[str, st
     return [(f"{g['name']} ({g['id']})", g["id"]) for g in garments]
 
 
+def _build_garment2_choices(garments: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [("None", "")] + _build_garment_choices(garments)
+
+
 def _build_person_gallery(persons: list[dict[str, Any]]) -> list[tuple[str, str]]:
     items = []
     for person in persons:
@@ -619,7 +632,10 @@ def _build_result_gallery(results: list[dict[str, Any]]) -> list[tuple[str, str]
         image_path = result.get("output_path")
         if not image_path:
             continue
+        garment_ids = result.get("garment_ids", "") or ""
         label = f"{result.get('provider', '')} | {result.get('id', '')}"
+        if garment_ids and "," in garment_ids:
+            label += f" [{garment_ids}]"
         items.append((image_path, label))
     return items
 
@@ -822,10 +838,12 @@ def _handle_admin_update_garment(
 ):
     if not garment_id:
         choices, gallery = _refresh_garment_ui(store)
+        choices2 = _build_garment2_choices(store.list_garments())
         return (
             "Select garment.",
             gallery,
             gr.update(choices=choices),
+            gr.update(choices=choices2),
             gr.update(choices=choices),
             gr.update(choices=choices),
             gr.update(choices=choices),
@@ -834,6 +852,7 @@ def _handle_admin_update_garment(
 
     updated = store.update_garment(garment_id, name, category, description, must_preserve_logo)
     choices, gallery = _refresh_garment_ui(store)
+    choices2 = _build_garment2_choices(store.list_garments())
     status = "Garment updated." if updated else "Garment not found."
     admin_value = garment_id if updated else None
 
@@ -841,6 +860,7 @@ def _handle_admin_update_garment(
         status,
         gallery,
         gr.update(choices=choices),
+        gr.update(choices=choices2),
         gr.update(choices=choices),
         gr.update(choices=choices),
         gr.update(choices=choices),
@@ -902,6 +922,7 @@ def _handle_admin_delete_garment(
     garment = store.get_garment(garment_id) if garment_id else None
     if not garment_id or not garment:
         choices, gallery = _refresh_garment_ui(store)
+        choices2 = _build_garment2_choices(store.list_garments())
         return (
             "Garment not found." if garment_id else "Select garment.",
             "",
@@ -912,6 +933,7 @@ def _handle_admin_delete_garment(
             None,
             gallery,
             gr.update(choices=choices, value=None),
+            gr.update(choices=choices2, value=""),
             gr.update(choices=choices, value=None),
             gr.update(choices=choices, value=None),
             gr.update(choices=choices, value=None),
@@ -923,6 +945,7 @@ def _handle_admin_delete_garment(
         _delete_asset_dir(config.app_data_dir / "garments", garment_id)
 
     choices, gallery = _refresh_garment_ui(store)
+    choices2 = _build_garment2_choices(store.list_garments())
     return (
         "Garment deleted.",
         "",
@@ -933,6 +956,7 @@ def _handle_admin_delete_garment(
         None,
         gallery,
         gr.update(choices=choices, value=None),
+        gr.update(choices=choices2, value=""),
         gr.update(choices=choices, value=None),
         gr.update(choices=choices, value=None),
         gr.update(choices=choices, value=None),
@@ -965,10 +989,12 @@ def _handle_admin_register_garments(
 ):
     added = _register_garments_from_folder(store, config, category)
     choices, gallery = _refresh_garment_ui(store)
+    choices2 = _build_garment2_choices(store.list_garments())
     return (
         f"Registered {added} garment(s) from folder.",
         gallery,
         gr.update(choices=choices),
+        gr.update(choices=choices2),
         gr.update(choices=choices),
         gr.update(choices=choices),
         gr.update(choices=choices),
@@ -991,10 +1017,12 @@ def _handle_admin_refresh_persons(store: MetadataStore):
 
 def _handle_admin_refresh_garments(store: MetadataStore):
     choices, gallery = _refresh_garment_ui(store)
+    choices2 = _build_garment2_choices(store.list_garments())
     return (
         "Refreshed garments.",
         gallery,
         gr.update(choices=choices),
+        gr.update(choices=choices2),
         gr.update(choices=choices),
         gr.update(choices=choices),
         gr.update(choices=choices),
@@ -1160,6 +1188,7 @@ def _handle_save_garment(
             "No files selected.",
             _build_garment_gallery(store.list_garments()),
             gr.update(choices=_build_garment_choices(store.list_garments()), value=None),
+            gr.update(choices=_build_garment2_choices(store.list_garments()), value=""),
             gr.update(choices=_build_garment_choices(store.list_garments()), value=None),
             gr.update(choices=_build_garment_choices(store.list_garments()), value=None),
             gr.update(choices=_build_garment_choices(store.list_garments()), value=None),
@@ -1187,6 +1216,7 @@ def _handle_save_garment(
 
     garments = store.list_garments()
     choices = _build_garment_choices(garments)
+    choices2 = _build_garment2_choices(garments)
     gallery = _build_garment_gallery(garments)
     status = f"Saved {saved} garment(s)."
 
@@ -1194,6 +1224,7 @@ def _handle_save_garment(
         status,
         gallery,
         gr.update(choices=choices, value=None),
+        gr.update(choices=choices2, value=""),
         gr.update(choices=choices, value=None),
         gr.update(choices=choices, value=None),
         gr.update(choices=choices, value=None),
@@ -1204,6 +1235,7 @@ def _handle_save_garment(
 def _handle_generate_single(
     person_id: str,
     garment_id: str,
+    garment2_id: str,  # empty string means no second garment
     provider_name: str,
     quality: str,
     aspect_ratio: str,
@@ -1222,9 +1254,23 @@ def _handle_generate_single(
     if not person or not garment:
         return "Invalid person or garment selection.", []
 
+    # Load second garment if provided
+    garment2 = store.get_garment(garment2_id) if garment2_id else None
+
+    # Build combined garment description for prompt
+    garment_desc = garment.get("description") or ""
+    if garment2:
+        garment_desc2 = garment2.get("description") or ""
+        if garment_desc and garment_desc2:
+            combined_garment_desc = f"{garment_desc}; {garment_desc2}"
+        else:
+            combined_garment_desc = garment_desc or garment_desc2
+    else:
+        combined_garment_desc = garment_desc
+
     prompt = build_tryon_prompt(
         person_description=person.get("description"),
-        garment_description=garment.get("description"),
+        garment_description=combined_garment_desc or None,
         scene_description=scene_description,
     )
 
@@ -1237,7 +1283,7 @@ def _handle_generate_single(
         result_records = _save_failed_result(
             store,
             person_id,
-            garment_id,
+            [garment_id, garment2_id] if garment2 else [garment_id],
             provider.name,
             error_message,
             prompt,
@@ -1249,6 +1295,8 @@ def _handle_generate_single(
         person_image_path=_to_absolute_path(person["image_path"], config.project_root),
         garment_image_path=_to_absolute_path(garment["image_path"], config.project_root),
         garment_category=garment.get("category", ""),
+        garment2_image_path=_to_absolute_path(garment2["image_path"], config.project_root) if garment2 else None,
+        garment2_category=garment2.get("category", "") if garment2 else None,
         prompt=prompt,
         negative_prompt=negative_prompt,
         aspect_ratio=aspect_ratio,
@@ -1258,11 +1306,12 @@ def _handle_generate_single(
     )
 
     result = provider.generate_tryon_image(request)
+    garment_ids = [garment_id, garment2_id] if garment2 else [garment_id]
     result_records = _save_provider_results(
         store,
         result,
         person_id,
-        garment_id,
+        garment_ids,
         prompt,
         negative_prompt,
         config.project_root,
@@ -1271,7 +1320,10 @@ def _handle_generate_single(
     if result.status != "success":
         message = f"Failed: {result.error_message or 'Unknown error'}"
     else:
-        message = f"Generated {len(result.output_paths)} image(s) with {result.provider}."
+        label = f"Generated {len(result.output_paths)} image(s) with {result.provider}"
+        if garment2:
+            label += f" (2 garments)"
+        message = label
 
     return message, _build_result_gallery(result_records)
 
@@ -1338,7 +1390,7 @@ def _handle_generate_batch(
                 store,
                 result,
                 person_id,
-                garment_id,
+                [garment_id],
                 prompt,
                 negative_prompt,
                 config.project_root,
@@ -1406,18 +1458,21 @@ def _save_provider_results(
     store: MetadataStore,
     result,
     person_id: str,
-    garment_id: str,
+    garment_ids: list[str],
     prompt: str,
     negative_prompt: str,
     project_root: Path,
 ) -> list[dict[str, Any]]:
+    primary_garment_id = garment_ids[0] if garment_ids else ""
+    garment_ids_str = ",".join(filter(None, garment_ids))
     records: list[dict[str, Any]] = []
     if result.output_paths:
         for output_path in result.output_paths:
             record = {
                 "id": generate_id("result"),
                 "person_id": person_id,
-                "garment_id": garment_id,
+                "garment_id": primary_garment_id,
+                "garment_ids": garment_ids_str,
                 "result_type": "image",
                 "provider": result.provider,
                 "model": result.model,
@@ -1435,7 +1490,8 @@ def _save_provider_results(
             {
                 "id": generate_id("result"),
                 "person_id": person_id,
-                "garment_id": garment_id,
+                "garment_id": primary_garment_id,
+                "garment_ids": garment_ids_str,
                 "result_type": "image",
                 "provider": result.provider,
                 "model": result.model,
@@ -1456,16 +1512,19 @@ def _save_provider_results(
 def _save_failed_result(
     store: MetadataStore,
     person_id: str,
-    garment_id: str,
+    garment_ids: list[str],
     provider_name: str,
     error_message: str,
     prompt: str,
     negative_prompt: str,
 ) -> list[dict[str, Any]]:
+    primary_garment_id = garment_ids[0] if garment_ids else ""
+    garment_ids_str = ",".join(filter(None, garment_ids))
     record = {
         "id": generate_id("result"),
         "person_id": person_id,
-        "garment_id": garment_id,
+        "garment_id": primary_garment_id,
+        "garment_ids": garment_ids_str,
         "result_type": "image",
         "provider": provider_name,
         "model": "stub",

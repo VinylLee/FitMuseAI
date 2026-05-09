@@ -1,3 +1,5 @@
+# api说明网站：https://help.aliyun.com/zh/model-studio/outfitanyone-api?spm=a2c4g.11186623.help-menu-2400256.d_2_2_20_0.287e19566bUVmm
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -86,6 +88,9 @@ class AliyunAitryonProvider(GenerationProvider):
         try:
             person_url = self._ensure_public_url(request.person_image_path, request.person_public_url)
             garment_url = self._ensure_public_url(request.garment_image_path, request.garment_public_url)
+            garment2_url = None
+            if request.garment2_image_path:
+                garment2_url = self._ensure_public_url(request.garment2_image_path, request.garment2_public_url)
         except RuntimeError as exc:
             return ProviderTaskResult(
                 task_id=None,
@@ -97,25 +102,23 @@ class AliyunAitryonProvider(GenerationProvider):
                 error_message=str(exc),
             )
 
-        category = (request.garment_category or "").strip()
         top_url = None
         bottom_url = None
-        if category in {"lower_body"}:
+
+        # Categorize first garment
+        cat1 = (request.garment_category or "").strip()
+        if cat1 in {"lower_body"}:
             bottom_url = garment_url
-        elif category in {"upper_body", "outerwear", "dress", "set", "other"}:
-            top_url = garment_url
-        elif category in {"shoes"}:
-            return ProviderTaskResult(
-                task_id=None,
-                provider=self.name,
-                model=model,
-                status="failed",
-                remote_urls=[],
-                output_paths=[],
-                error_message="Aitryon does not support shoes category.",
-            )
         else:
             top_url = garment_url
+
+        # Categorize second garment
+        if garment2_url:
+            cat2 = (request.garment2_category or "").strip()
+            if cat2 in {"lower_body"}:
+                bottom_url = garment2_url
+            else:
+                top_url = garment2_url
 
         if not top_url and not bottom_url:
             return ProviderTaskResult(

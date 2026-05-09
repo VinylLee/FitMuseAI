@@ -82,6 +82,15 @@ class MetadataStore:
                 """
             )
             self._conn.commit()
+            self._migrate_results()
+
+    def _migrate_results(self) -> None:
+        cursor = self._conn.cursor()
+        cursor.execute("PRAGMA table_info(results)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "garment_ids" not in columns:
+            cursor.execute("ALTER TABLE results ADD COLUMN garment_ids TEXT")
+            self._conn.commit()
 
     def _execute(self, sql: str, params: Optional[Iterable[Any]] = None) -> sqlite3.Cursor:
         with self._lock:
@@ -200,6 +209,7 @@ class MetadataStore:
         for result in results:
             result = dict(result)
             result.setdefault("created_at", _now_iso())
+            garment_ids = result.get("garment_ids") or result.get("garment_id") or ""
             prepared.append(
                 [
                     result["id"],
@@ -216,6 +226,7 @@ class MetadataStore:
                     result.get("error_message"),
                     1 if result.get("is_canonical") else 0,
                     result["created_at"],
+                    garment_ids,
                 ]
             )
 
@@ -225,9 +236,10 @@ class MetadataStore:
                 """
                 INSERT INTO results (
                     id, person_id, garment_id, result_type, provider, model, prompt,
-                    negative_prompt, output_path, seed, status, error_message, is_canonical, created_at
+                    negative_prompt, output_path, seed, status, error_message, is_canonical, created_at,
+                    garment_ids
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 prepared,
             )

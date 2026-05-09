@@ -21,6 +21,9 @@ class TryOnRequest:
     garment_public_url: Optional[str] = None
     quality_mode: str = "preview"
     model_override: Optional[str] = None
+    garment2_image_path: Optional[str] = None
+    garment2_category: Optional[str] = None
+    garment2_public_url: Optional[str] = None
 
 
 @dataclass
