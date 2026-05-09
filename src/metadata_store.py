@@ -240,6 +240,7 @@ class MetadataStore:
         person_id: Optional[str] = None,
         garment_id: Optional[str] = None,
         result_type: Optional[str] = None,
+        status: Optional[str] = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM results WHERE 1=1"
@@ -253,11 +254,66 @@ class MetadataStore:
         if result_type and result_type != "all":
             sql += " AND result_type = ?"
             params.append(result_type)
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
+        if status and status != "all":
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC"
+        if limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
 
         cursor = self._execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
+
+    def get_result(self, result_id: str) -> Optional[dict[str, Any]]:
+        cursor = self._execute("SELECT * FROM results WHERE id = ?", [result_id])
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def delete_result(self, result_id: str) -> bool:
+        with self._lock:
+            cursor = self._conn.cursor()
+            cursor.execute("DELETE FROM canonical_images WHERE result_id = ?", [result_id])
+            cursor.execute("UPDATE results SET is_canonical = 0 WHERE id = ?", [result_id])
+            cursor.execute("DELETE FROM results WHERE id = ?", [result_id])
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_results(
+        self,
+        person_id: Optional[str] = None,
+        garment_id: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> int:
+        """Batch delete results matching filters. Returns count of deleted rows."""
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if person_id:
+            clauses.append("person_id = ?")
+            params.append(person_id)
+        if garment_id:
+            clauses.append("garment_id = ?")
+            params.append(garment_id)
+        if status and status != "all":
+            clauses.append("status = ?")
+            params.append(status)
+
+        where = " AND ".join(clauses)
+        with self._lock:
+            cursor = self._conn.cursor()
+            # Remove canonical associations for matching results
+            cursor.execute(
+                f"DELETE FROM canonical_images WHERE result_id IN (SELECT id FROM results WHERE {where})",
+                params,
+            )
+            cursor.execute(
+                f"UPDATE results SET is_canonical = 0 WHERE {where}",
+                params,
+            )
+            cursor.execute(f"DELETE FROM results WHERE {where}", params)
+            deleted = cursor.rowcount
+            self._conn.commit()
+        return deleted
 
     def list_results_for_combo(self, person_id: str, garment_id: str) -> list[dict[str, Any]]:
         cursor = self._execute(

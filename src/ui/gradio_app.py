@@ -220,6 +220,33 @@ def build_app(
                     admin_garment_bulk_btn = gr.Button("Register from data/garments")
                     admin_garment_status = gr.Markdown()
 
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### Results")
+                    admin_result_person = gr.Dropdown(
+                        label="Filter by person", choices=[("All", "")] + person_choices
+                    )
+                    admin_result_garment = gr.Dropdown(
+                        label="Filter by garment", choices=[("All", "")] + garment_choices
+                    )
+                    admin_result_status_filter = gr.Dropdown(
+                        label="Filter by status",
+                        choices=["all", "success", "failed", "queued", "running"],
+                        value="all",
+                    )
+                    admin_result_refresh_btn = gr.Button("Refresh results")
+                    admin_result_by_id = gr.Textbox(
+                        label="Delete by result ID",
+                        placeholder="Paste a result ID to delete",
+                    )
+                    admin_result_delete_id_btn = gr.Button("Delete by ID")
+                    admin_result_clear_btn = gr.Button("Delete all filtered")
+                    admin_result_delete_files = gr.Checkbox(
+                        label="Also delete image files", value=False
+                    )
+                    admin_result_status = gr.Markdown()
+                    admin_result_gallery = gr.Gallery(label="Filtered results", columns=4)
+
         with gr.Tab("Settings"):
             gr.Markdown("## Configuration")
             gr.Markdown(
@@ -508,6 +535,33 @@ def build_app(
                 history_garment,
                 admin_garment,
             ],
+        )
+
+        admin_result_refresh_btn.click(
+            fn=lambda person_id, garment_id, status: _handle_admin_refresh_results(
+                person_id, garment_id, status, store
+            ),
+            inputs=[admin_result_person, admin_result_garment, admin_result_status_filter],
+            outputs=[admin_result_status, admin_result_gallery],
+        )
+        admin_result_delete_id_btn.click(
+            fn=lambda result_id, delete_files: _handle_admin_delete_result_by_id(
+                result_id, delete_files, store, config
+            ),
+            inputs=[admin_result_by_id, admin_result_delete_files],
+            outputs=[admin_result_status, admin_result_by_id],
+        )
+        admin_result_clear_btn.click(
+            fn=lambda person_id, garment_id, status, delete_files: _handle_admin_clear_results(
+                person_id, garment_id, status, delete_files, store, config
+            ),
+            inputs=[
+                admin_result_person,
+                admin_result_garment,
+                admin_result_status_filter,
+                admin_result_delete_files,
+            ],
+            outputs=[admin_result_status, admin_result_gallery],
         )
 
         settings_refresh_btn.click(
@@ -946,6 +1000,84 @@ def _handle_admin_refresh_garments(store: MetadataStore):
         gr.update(choices=choices),
         gr.update(choices=choices),
     )
+
+
+def _result_filter_args(
+    person_id: str, garment_id: str, status: str
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    return (
+        person_id if person_id else None,
+        garment_id if garment_id else None,
+        status if status and status != "all" else None,
+    )
+
+
+def _handle_admin_refresh_results(
+    person_id: str, garment_id: str, status: str, store: MetadataStore
+):
+    p, g, s = _result_filter_args(person_id, garment_id, status)
+    results = store.list_results(p, g, status=s, limit=0)
+    gallery = _build_result_gallery(results)
+    count = len(results)
+    return f"Found {count} result(s)." if count else "No results found.", gallery
+
+
+def _handle_admin_delete_result_by_id(
+    result_id: str, delete_files: bool, store: MetadataStore, config: AppConfig
+):
+    if not result_id:
+        return "Enter a result ID.", ""
+
+    result = store.get_result(result_id)
+    if not result:
+        return f"Result not found: {result_id}", ""
+
+    output_path = result.get("output_path", "")
+    store.delete_result(result_id)
+
+    if delete_files and output_path:
+        _delete_result_file(output_path, config.project_root)
+
+    return f"Deleted result: {result_id}", ""
+
+
+def _handle_admin_clear_results(
+    person_id: str,
+    garment_id: str,
+    status: str,
+    delete_files: bool,
+    store: MetadataStore,
+    config: AppConfig,
+):
+    p, g, s = _result_filter_args(person_id, garment_id, status)
+
+    if not p and not g and not s:
+        return "Please narrow the filter to avoid deleting all results.", []
+
+    # Collect output paths before DB deletion
+    to_delete = store.list_results(p, g, status=s, limit=0)
+    output_paths = [r["output_path"] for r in to_delete if r.get("output_path")]
+
+    deleted = store.delete_results(p, g, s)
+
+    if delete_files:
+        for path in output_paths:
+            _delete_result_file(path, config.project_root)
+
+    remaining = store.list_results(p, g, status=s, limit=0)
+    gallery = _build_result_gallery(remaining)
+    return f"Deleted {deleted} result(s).", gallery
+
+
+def _delete_result_file(output_path: str, project_root: Path) -> bool:
+    if not output_path:
+        return False
+    path = _to_absolute_path(output_path, project_root)
+    p = Path(path)
+    if p.exists():
+        p.unlink()
+        return True
+    return False
 
 
 def _handle_save_person(
